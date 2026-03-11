@@ -279,6 +279,55 @@ async function injectFile(cdp, filePath) {
     return { success: false, error: 'File input element not found' };
 }
 
+// --- Model Selection Helper ---
+async function listModels(cdp) {
+    const EXP = `(() => {
+        const selector = document.querySelector('[data-testid="model-selector"], .model-selector, button[aria-haspopup="menu"]');
+        if (!selector) return { error: "Selector not found" };
+        selector.click();
+        return new Promise(r => {
+            setTimeout(() => {
+                const items = Array.from(document.querySelectorAll('[role="menuitem"], .model-item, li'))
+                    .filter(el => el.offsetParent !== null)
+                    .map(el => el.innerText || el.textContent);
+                r({ items });
+            }, 500);
+        });
+    })()`;
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id, awaitPromise: true });
+            if (res.result?.value?.items) return res.result.value.items;
+        } catch(e){}
+    }
+    return [];
+}
+
+async function selectModel(cdp, modelName) {
+    const safeName = JSON.stringify(modelName);
+    const EXP = `(async () => {
+        const selector = document.querySelector('[data-testid="model-selector"], .model-selector, button[aria-haspopup="menu"]');
+        if (!selector) return { error: "Selector not found" };
+        selector.click();
+        await new Promise(r => setTimeout(r, 500));
+        const items = Array.from(document.querySelectorAll('[role="menuitem"], .model-item, li'))
+            .filter(el => el.offsetParent !== null);
+        const target = items.find(i => (i.innerText || i.textContent).toLowerCase().includes(${safeName}.toLowerCase()));
+        if (target) {
+            target.click();
+            return { success: true, name: target.innerText || target.textContent };
+        }
+        return { error: "Model not found" };
+    })()`;
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id, awaitPromise: true });
+            if (res.result?.value) return res.result.value;
+        } catch(e){}
+    }
+    return { error: "Failed to switch" };
+}
+
 async function pollForAIResponse(cdp, ctx) {
     const EXP = `(async () => {
         const cancelBtn = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
@@ -361,24 +410,7 @@ bot.command('screenshot', (ctx) => {
     takeScreenshot(ctx, true);
 });
 
-bot.command('new', async (ctx) => {
-    try {
-        const url = await discoverCDP();
-        const cdp = await connectCDP(url);
-        const res = await startNewChat(cdp);
-        
-        if (res.success) {
-            ctx.reply("✅ Started new chat session.");
-        } else {
-            ctx.reply(`❌ Failed: ${res.error || 'Unknown error'}`);
-        }
-        cdp.ws.close();
-    } catch (err) {
-        ctx.reply(`❌ Error: ${err.message}`);
-    }
-});
-
-bot.command('stop', async (ctx) => {
+async function executeStop(ctx) {
     try {
         const url = await discoverCDP();
         const cdp = await connectCDP(url);
@@ -393,11 +425,80 @@ bot.command('stop', async (ctx) => {
     } catch (err) {
         ctx.reply(`❌ Error: ${err.message}`);
     }
+}
+
+async function executeNew(ctx) {
+    try {
+        const url = await discoverCDP();
+        const cdp = await connectCDP(url);
+        const res = await startNewChat(cdp);
+        
+        if (res.success) {
+            ctx.reply("✅ Started new chat session.");
+        } else {
+            ctx.reply(`❌ Failed: ${res.error || 'Unknown error'}`);
+        }
+        cdp.ws.close();
+    } catch (err) {
+        ctx.reply(`❌ Error: ${err.message}`);
+    }
+}
+
+bot.command('new', async (ctx) => {
+    executeNew(ctx);
 });
+
+bot.command('stop', async (ctx) => {
+    executeStop(ctx);
+});
+
+bot.command('models', async (ctx) => {
+    try {
+        const url = await discoverCDP();
+        const cdp = await connectCDP(url);
+        const models = await listModels(cdp);
+        if (models.length > 0) {
+            ctx.reply("🤖 Available Models:\n" + models.map(m => "• " + m.trim()).join("\n") + "\n\nUse /model <name> to switch.");
+        } else {
+            ctx.reply("❌ Could not detect model list. Make sure the chat is open.");
+        }
+        cdp.ws.close();
+    } catch (err) {
+        ctx.reply(`❌ Error: ${err.message}`);
+    }
+});
+
+bot.command('model', async (ctx) => {
+    const text = ctx.message.text.split(' ').slice(1).join(' ');
+    if (!text) return ctx.reply("Please specify a model name. Example: /model claude");
+
+    try {
+        const url = await discoverCDP();
+        const cdp = await connectCDP(url);
+        const res = await selectModel(cdp, text);
+        if (res.success) {
+            ctx.reply(`✅ Switched AI to: ${res.name}`);
+        } else {
+            ctx.reply(`❌ Failed: ${res.error}`);
+        }
+        cdp.ws.close();
+    } catch (err) {
+        ctx.reply(`❌ Error: ${err.message}`);
+    }
+});
+
 
 // --- Text & File Handlers ---
 bot.on('text', async (ctx) => {
     const text = ctx.message.text;
+    const lower = text.toLowerCase().trim();
+
+    // Quick Shortcuts (case-insensitive, no slash needed)
+    if (lower === 'stop') return executeStop(ctx);
+    if (lower === 'new') return executeNew(ctx);
+    if (lower === 'status') return ctx.reply("✅ Antigravity Remote active.");
+    if (lower === 'screen') return takeScreenshot(ctx, false);
+
     if (text.startsWith('/')) return;
 
     try {
@@ -498,5 +599,14 @@ bot.launch().then(() => {
 }).catch(err => {
     console.error("Bot launch failed:", err);
 });
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+async function gracefulStop(signal) {
+    console.log(`Received ${signal}. Stopping bot...`);
+    try {
+        await bot.telegram.sendMessage(chatId, `🛑 Antigravity Remote CDP Bridge Stopped (${signal}).`);
+    } catch (e) {}
+    bot.stop(signal);
+    process.exit(0);
+}
+
+process.once('SIGINT', () => gracefulStop('SIGINT'));
+process.once('SIGTERM', () => gracefulStop('SIGTERM'));

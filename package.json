@@ -4,6 +4,10 @@
     "description": "Bridge for Telegram and Antigravity AI via CDP",
     "version": "0.2.5",
     "publisher": "yash",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/YashMahawa/antigravity-telegram-bridge.git"
+    },
     "engines": {
         "vscode": "^1.75.0"
     },

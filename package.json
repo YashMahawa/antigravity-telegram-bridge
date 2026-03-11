@@ -1,0 +1,51 @@
+{
+  "name": "antigravity-telegram-bridge",
+  "displayName": "Antigravity Telegram Bridge",
+  "description": "Bridge for Telegram and Antigravity AI via CDP",
+  "version": "0.2.5",
+  "publisher": "yash",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antigravity-telegram.setToken",
+        "title": "Telegram: Set Bot Token"
+      },
+      {
+        "command": "antigravity-telegram.setChatId",
+        "title": "Telegram: Set Chat ID"
+      }
+    ],
+    "configuration": {
+      "title": "Antigravity Telegram Bridge",
+      "properties": {
+        "antigravityTelegram.botToken": {
+          "type": "string",
+          "default": "",
+          "description": "The Telegram Bot Token from @BotFather"
+        },
+        "antigravityTelegram.chatId": {
+          "type": "string",
+          "default": "",
+          "description": "The Telegram Chat ID to send messages to"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "telegraf": "^4.16.3",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.7",
+    "@types/vscode": "^1.75.0"
+  }
+}

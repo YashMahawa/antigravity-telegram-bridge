@@ -61,6 +61,7 @@ async function isServiceActive() {
 async function startService(context, output) {
     const plat = os.platform();
     const botScript = path.join(context.extensionPath, 'standalone_bot.js');
+    const nodePath = process.execPath.includes('node') ? process.execPath : 'node';
     
     if (plat === 'linux') {
         const unitContent = `[Unit]
@@ -69,9 +70,9 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${process.execPath} "${botScript}"
+ExecStart=${nodePath} "${botScript}"
 Restart=always
-Environment=PATH=/usr/bin:/usr/local/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=${context.extensionPath}
 
 [Install]
@@ -95,7 +96,7 @@ WantedBy=default.target`;
     <string>${PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${process.execPath}</string>
+        <string>${nodePath}</string>
         <string>${botScript}</string>
     </array>
     <key>RunAtLoad</key>

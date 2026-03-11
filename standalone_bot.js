@@ -8,23 +8,39 @@ const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
 
-// Config - Reading from Antigravity settings
+// Config - Reading from Antigravity settings or Bridge config
 const settingsPath = path.join(os.homedir(), '.config', 'Antigravity', 'User', 'settings.json');
-let botToken = process.env.BOT_TOKEN || "8686741092:AAFCrkU7MxvTNeDeQuW1StpV76WD59GJitY";
-let chatId = process.env.CHAT_ID || "5294228991";
+const bridgeConfigPath = path.join(os.homedir(), '.antigravity', 'telegram_bridge.json');
 
-try {
-    if (fs.existsSync(settingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        botToken = settings['antigravityTelegram.botToken'] || botToken;
-        chatId = settings['antigravityTelegram.chatId'] || chatId;
+let botToken = process.env.BOT_TOKEN;
+let chatId = process.env.CHAT_ID;
+
+function loadConfig() {
+    try {
+        if (fs.existsSync(settingsPath)) {
+            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            botToken = settings['antigravityTelegram.botToken'] || botToken;
+            chatId = settings['antigravityTelegram.chatId'] || chatId;
+        }
+        if (fs.existsSync(bridgeConfigPath)) {
+            const config = JSON.parse(fs.readFileSync(bridgeConfigPath, 'utf8'));
+            botToken = config.bot_token || botToken;
+            chatId = config.chat_id || chatId;
+        }
+    } catch (e) {
+        console.error("Error reading settings:", e);
     }
-} catch (e) {
-    console.error("Error reading settings:", e);
+}
+
+loadConfig();
+
+if (!botToken) {
+    console.error("❌ No Bot Token found! Please set it in Antigravity settings.");
+    process.exit(1);
 }
 
 const bot = new Telegraf(botToken);
-console.log("Standalone Telegram Bot started with CDP integration...");
+console.log("Antigravity Remote Control CDP Bot started...");
 
 // --- CDP Helpers ---
 const CDP_PORT = 7800;
@@ -109,8 +125,8 @@ async function injectMessage(cdp, text) {
         const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
         if (cancel && cancel.offsetParent !== null) return { ok:false, reason:"busy" };
 
-        const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
-            .filter(el => el.offsetParent !== null);
+        const editors = [...document.querySelectorAll('div[contenteditable="true"], [role="textbox"][contenteditable="true"]')]
+            .filter(el => el.offsetParent !== null && !el.classList.contains('monaco-editor'));
         const editor = editors.at(-1);
         if (!editor) return { ok:false, error:"editor_not_found" };
 
@@ -334,7 +350,7 @@ bot.use((ctx, next) => {
 
 // --- Commands ---
 bot.command('status', (ctx) => {
-    ctx.reply("✅ Standalone service is active. CDP automation is ready.");
+    ctx.reply("✅ Antigravity Remote Control active. CDP Engine ready.");
 });
 
 bot.command('screen', (ctx) => {
@@ -352,13 +368,13 @@ bot.command('new', async (ctx) => {
         const res = await startNewChat(cdp);
         
         if (res.success) {
-            ctx.reply("✅ Started new chat session successfully.");
+            ctx.reply("✅ Started new chat session.");
         } else {
-            ctx.reply(`❌ Failed to start new chat: ${res.error || 'Unknown error'}`);
+            ctx.reply(`❌ Failed: ${res.error || 'Unknown error'}`);
         }
         cdp.ws.close();
     } catch (err) {
-        ctx.reply(`❌ Error connecting to IDE: ${err.message}\nMake sure Antigravity is launched with: --remote-debugging-port=${CDP_PORT}`);
+        ctx.reply(`❌ Error: ${err.message}`);
     }
 });
 
@@ -369,13 +385,13 @@ bot.command('stop', async (ctx) => {
         const res = await stopGeneration(cdp);
         
         if (res.success) {
-            ctx.reply("⏹️ Stopped generation successfully.");
+            ctx.reply("⏹️ Stopped AI generation.");
         } else {
-            ctx.reply(`❌ Failed to stop generation: ${res.error || 'No active generation'}`);
+            ctx.reply(`❌ Failed: ${res.error || 'No active generation'}`);
         }
         cdp.ws.close();
     } catch (err) {
-        ctx.reply(`❌ Error connecting to IDE: ${err.message}`);
+        ctx.reply(`❌ Error: ${err.message}`);
     }
 });
 
@@ -392,54 +408,47 @@ bot.on('text', async (ctx) => {
         
         if (res.ok) {
             ctx.reply("🚀 Prompt submitted. Waiting for response...");
-            pollForAIResponse(cdp, ctx); // CDP connection is closed inside pollForAIResponse
+            pollForAIResponse(cdp, ctx);
         } else if (res.reason === "busy") {
-            ctx.reply("⏳ AI is currently generating. Please wait or use /stop.");
+            ctx.reply("⏳ AI is busy. Use /stop to interrupt.");
             cdp.ws.close();
         } else {
-            ctx.reply(`❌ Failed to inject prompt. Editor not found.`);
+            ctx.reply(`❌ Failed: Editor not found.`);
             cdp.ws.close();
         }
     } catch (err) {
-        ctx.reply(`❌ Error connecting to IDE: ${err.message}\nMake sure Antigravity is launched with: --remote-debugging-port=${CDP_PORT}`);
+        ctx.reply(`❌ IDE Connection Error: ${err.message}`);
     }
 });
 
 bot.on(['photo', 'document'], async (ctx) => {
     try {
         let fileId;
-        if (ctx.message.photo) {
-            fileId = ctx.message.photo.pop().file_id;
-        } else if (ctx.message.document) {
-            fileId = ctx.message.document.file_id;
-        }
+        if (ctx.message.photo) fileId = ctx.message.photo.pop().file_id;
+        else if (ctx.message.document) fileId = ctx.message.document.file_id;
         
         if (!fileId) return;
 
-        ctx.reply("📥 Downloading file...");
+        ctx.reply("📥 Downloading...");
         const fileLink = await ctx.telegram.getFileLink(fileId);
-        
         const ext = path.extname(fileLink.href) || (ctx.message.photo ? '.jpg' : '');
         const tmpPath = path.join(os.tmpdir(), `tg_upload_${Date.now()}${ext}`);
         
         await downloadFile(fileLink.href, tmpPath);
         
-        ctx.reply("💉 Injecting file into Antigravity...");
-        
+        ctx.reply("💉 Injecting...");
         const url = await discoverCDP();
         const cdp = await connectCDP(url);
-        
         const res = await injectFile(cdp, tmpPath);
         
         if (res.success) {
-            ctx.reply("✅ Image/File uploaded to IDE context! Send your prompt now.");
+            ctx.reply("✅ File uploaded! You can send your prompt now.");
         } else {
-            ctx.reply(`❌ Failed to inject file: ${res.error}`);
+            ctx.reply(`❌ Upload failed: ${res.error}`);
         }
         cdp.ws.close();
-        
     } catch (err) {
-        ctx.reply(`❌ Error processing file: ${err.message}`);
+        ctx.reply(`❌ Error: ${err.message}`);
     }
 });
 
@@ -448,7 +457,7 @@ function downloadFile(url, dest) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(dest);
         https.get(url, response => {
-            if (response.statusCode !== 200) return reject(new Error('Failed to download'));
+            if (response.statusCode !== 200) return reject(new Error('Failed download'));
             response.pipe(file);
             file.on('finish', () => file.close(() => resolve(dest)));
         }).on('error', err => fs.unlink(dest, () => reject(err)));
@@ -468,23 +477,26 @@ function takeScreenshot(ctx, windowOnly = false) {
         cmd = windowOnly ? `gnome-screenshot -w -f "${tmpPath}"` : `gnome-screenshot -f "${tmpPath}"`;
     }
     
-    ctx.reply(windowOnly ? "📸 Capturing active window..." : "🖥️ Capturing full screen...");
+    ctx.reply(windowOnly ? "📸 Capturing window..." : "🖥️ Capturing screen...");
 
     exec(cmd, async (error) => {
         if (error) {
-            ctx.reply(`❌ Screenshot failed. Supported: Windows, Mac, Linux (requires gnome-screenshot, try: sudo apt install gnome-screenshot).`);
+            ctx.reply(`❌ Failed. Make sure screenshot tools are installed.`);
             return;
         }
         try {
-            await ctx.replyWithPhoto({ source: tmpPath }, { caption: windowOnly ? "🖼️ Active Window" : "💻 Full Desktop" });
+            await ctx.replyWithPhoto({ source: tmpPath });
             setTimeout(() => { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); }, 2000);
         } catch (err) {
-            ctx.reply(`❌ Error sending photo: ${err.message}`);
+            ctx.reply(`❌ Error: ${err.message}`);
         }
     });
 }
 
-bot.launch();
-
+bot.launch().then(() => {
+    bot.telegram.sendMessage(chatId, "✅ Antigravity Remote CDP Bridge Started. Ready for commands!");
+}).catch(err => {
+    console.error("Bot launch failed:", err);
+});
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
